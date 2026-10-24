@@ -2,6 +2,8 @@
 
 Primera interfaz conceptual para un sistema de movilidad que coordina rutas mediante optimización cuántica. Superpose no busca la mejor ruta para cada conductor de forma aislada: busca la mejor asignación conjunta para toda la red.
 
+**Despliegue:** https://superpose-front.vercel.app/
+
 ## Ejecutar localmente
 
 ```bash
