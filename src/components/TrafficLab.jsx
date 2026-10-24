@@ -1,11 +1,58 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { API_BASE, reportIncident, startSimulation } from '../api/superposeApi.js'
-import { applyMockIncident, createMockSession, MOCK_INCIDENTS } from '../data/backendSnapshot.js'
+import {
+  API_BASE,
+  DEFAULT_USER_TRIP,
+  DEFAULT_BACKGROUND_FLOWS,
+  startSimulation,
+  reportIncident,
+  syncSimulation,
+  applyBackgroundFlows,
+  resetEventsAPI,
+  optimizeRoute,
+} from '../api/superposeApi.js'
+import {
+  applyMockIncident,
+  createMockSession,
+  MOCK_INCIDENTS,
+} from '../data/backendSnapshot.js'
+
+export const CITY_NODES = [
+  { id: 'NODO_A', label: 'Callao', code: 'A' },
+  { id: 'NODO_B', label: 'Los Olivos', code: 'B' },
+  { id: 'NODO_C', label: 'Cercado de Lima', code: 'C' },
+  { id: 'NODO_D', label: 'San Isidro', code: 'D' },
+  { id: 'NODO_E', label: 'San Juan de Lurigancho', code: 'E' },
+  { id: 'NODO_F', label: 'La Molina', code: 'F' },
+]
 
 const INCIDENTS = [
-  { value: 'ACCIDENT', label: 'Accidente' },
-  { value: 'TRAFFIC_JAM', label: 'Congestión' },
-  { value: 'ROADWORK', label: 'Obras' },
+  { value: 'ACCIDENT', label: 'Accidente', description: 'Bloqueo crítico (+5000 min tiempo fijo)' },
+  { value: 'TRAFFIC_JAM', label: 'Congestión', description: 'Atasco en vía (1.8× tiempo, 4× penalización)' },
+  { value: 'ROADWORK', label: 'Obras viales', description: 'Reducción de carriles (1.5× tiempo, 6× penalización)' },
+]
+
+const BACKGROUND_PRESETS = [
+  {
+    name: 'Estándar (Backend default)',
+    flows: [
+      { origin: 'NODO_B', destination: 'NODO_F', vehicles: 20 },
+      { origin: 'NODO_A', destination: 'NODO_E', vehicles: 30 },
+    ],
+  },
+  {
+    name: 'Hora Punta Matutina',
+    flows: [
+      { origin: 'NODO_B', destination: 'NODO_F', vehicles: 35 },
+      { origin: 'NODO_A', destination: 'NODO_E', vehicles: 45 },
+    ],
+  },
+  {
+    name: 'Demanda Moderada',
+    flows: [
+      { origin: 'NODO_B', destination: 'NODO_F', vehicles: 10 },
+      { origin: 'NODO_A', destination: 'NODO_E', vehicles: 15 },
+    ],
+  },
 ]
 
 const STATUS_LABELS = {
@@ -58,8 +105,6 @@ function pointAt(timeline = [], elapsedMs = 0) {
   return { ...last, angle: Math.atan2(last.y - previous.y, last.x - previous.x) * (180 / Math.PI) }
 }
 
-// Keeps a vehicle where it is when its route is recalculated: it joins the new
-// route at the closest point and keeps the same pace from there.
 function continueTimeline(previousTimeline = [], nextTimeline = [], atMs = 0) {
   if (!previousTimeline.length || !nextTimeline.length) return nextTimeline
   if (atMs <= previousTimeline[0].atMs) return nextTimeline
@@ -100,22 +145,10 @@ function continueSession(previousSession, nextSession, atMs) {
   }
 }
 
-function pointsForRoad(road, nodes) {
-  if (road.geometry?.length) return road.geometry
-  const from = nodes.get(road.from)
-  const to = nodes.get(road.to)
-  return from && to ? [[from.x, from.y], [to.x, to.y]] : []
-}
-
-function pathFromPoints(points = [], closed = false) {
-  if (!points.length) return ''
-  return `${points.map(([x, y], index) => `${index ? 'L' : 'M'}${x} ${y}`).join(' ')}${closed ? ' Z' : ''}`
-}
-
 const ROAD_COLORS = {
-  expressway: '#3ee8f5',
-  avenue: '#b07cf7',
-  local: '#f59a72',
+  expressway: '#3b485d',
+  avenue: '#2b3648',
+  local: '#1e2634',
 }
 
 const EVENT_BADGES = {
@@ -124,7 +157,6 @@ const EVENT_BADGES = {
   ROADWORK: { label: 'OBRAS', tone: 'roadwork' },
 }
 
-// Node label boxes sit on the side that keeps them clear of the roads.
 const NODE_LABEL_SIDE = {
   NODO_A: 'left',
   NODO_B: 'left',
@@ -163,7 +195,18 @@ function nodeLabelBox(node, centroid) {
   return { ...positions[side], width, height }
 }
 
-function SimulationMap({ session, elapsedMs, selectedRoad, onSelectRoad, selectedVehicleId, onSelectVehicle, roadsInteractive = true }) {
+function SimulationMap({
+  session,
+  elapsedMs,
+  selectedRoad,
+  onSelectRoad,
+  selectedVehicleId,
+  onSelectVehicle,
+  roadsInteractive = true,
+  onSelectNode,
+  highlightedFlowId = 'usuario',
+  onSelectFlow,
+}) {
   const map = session?.map
   const vehicles = session?.vehicles || []
   const width = map?.width || 1376
@@ -218,42 +261,41 @@ function SimulationMap({ session, elapsedMs, selectedRoad, onSelectRoad, selecte
         </defs>
 
         <rect width={width} height={height} fill="url(#map-ground)" />
-        <rect width={width} height={height} fill="url(#map-streets)" />
-        <g className="traffic-map__areas">
-          {(map.areas || []).map((area) => (
-            <path key={area.id} className={`city-area city-area--${area.kind}`} d={pathFromPoints(area.points, true)} fill={area.kind === 'water' ? 'url(#map-ocean)' : undefined} />
+        <rect width={width} height={height} fill="url(#map-streets)" opacity=".3" />
+
+        <g className="city-areas">
+          {map.areas.map((area) => (
+            <path
+              key={area.id}
+              className={`city-area city-area--${area.kind}`}
+              d={`M ${area.points.map(([x, y]) => `${x} ${y}`).join(' L ')} Z`}
+              fill={area.kind === 'water' ? 'url(#map-ocean)' : '#162234'}
+            />
           ))}
         </g>
 
-        <text className="traffic-map__title" x={width / 2} y="70" textAnchor="middle">Superpose — Red vial de Lima</text>
-
         <g className="traffic-map__roads">
           {map.roads.map((road) => {
-            const points = pointsForRoad(road, nodes)
-            if (!points.length) return null
-            const d = pathFromPoints(points)
-            const isSelected = road.id === selectedRoad
-            const roadWidth = road.kind === 'expressway' ? 9 : (road.kind === 'avenue' ? 7 : 3.5)
+            const pathData = `M ${road.geometry.map(([x, y]) => `${x} ${y}`).join(' L ')}`
+            const isSelected = selectedRoad === road.id
+            const baseWidth = road.kind === 'expressway' ? 14 : (road.kind === 'avenue' ? 9 : 5)
+            const strokeColor = ROAD_COLORS[road.kind] || '#8ca2ba'
             return (
               <g
                 key={road.id}
-                className={`traffic-road traffic-road--${road.kind}${isSelected ? ' traffic-road--selected' : ''}${road.blocked ? ' traffic-road--blocked' : ''}`}
-                style={{ '--road-color': ROAD_COLORS[road.kind] || ROAD_COLORS.avenue, '--road-width': `${roadWidth}px` }}
+                className={`traffic-road traffic-road--${road.kind} ${isSelected ? 'traffic-road--selected' : ''} ${road.blocked ? 'traffic-road--blocked' : ''}`}
+                style={{ '--road-color': strokeColor, '--road-width': `${baseWidth}px` }}
               >
-                <title>{`${road.label} · ${road.lengthKm ?? '—'} km · ${road.blocked ? 'bloqueada' : `${road.currentTime ?? '—'} min`} · ${road.lanes ?? '—'} carriles · carga ${number(road.load, 1)}/${road.capacity ?? '—'}`}</title>
-                <path className="traffic-road__glow" d={d} filter="url(#map-glow)" />
-                <path className="traffic-road__body" d={d} />
-                {road.kind === 'expressway' && <path className="traffic-road__core" d={d} />}
+                <path className="traffic-road__glow" d={pathData} />
+                <path className="traffic-road__body" d={pathData} />
+                <path className="traffic-road__core" d={pathData} />
                 <path
-                  className={`traffic-road__hit${roadsInteractive ? '' : ' traffic-road__hit--disabled'}`}
-                  d={d}
-                  tabIndex={roadsInteractive ? 0 : undefined}
-                  role={roadsInteractive ? 'button' : undefined}
-                  aria-label={`Seleccionar vía ${road.label || road.id}`}
+                  className={`traffic-road__hit ${roadsInteractive ? '' : 'traffic-road__hit--disabled'}`}
+                  d={pathData}
                   onClick={() => roadsInteractive && onSelectRoad(road.id)}
-                  onKeyDown={(event) => {
-                    if (roadsInteractive && (event.key === 'Enter' || event.key === ' ')) onSelectRoad(road.id)
-                  }}
+                  role={roadsInteractive ? 'button' : undefined}
+                  aria-label={`Vía ${road.label}`}
+                  tabIndex={roadsInteractive ? 0 : -1}
                 />
               </g>
             )
@@ -261,62 +303,87 @@ function SimulationMap({ session, elapsedMs, selectedRoad, onSelectRoad, selecte
         </g>
 
         <g className="traffic-map__routes">
-          {(session.routes || []).map((route, index) => (
-            <path
-              key={route.id}
-              className={`traffic-route${route.flowId === 'usuario' ? ' traffic-route--user' : ''}`}
-              style={{ '--route-color': route.color }}
-              d={pathFromPoints(offsetPoints(route.points, -14 - index * 7))}
-            />
-          ))}
-        </g>
-
-        <g className="traffic-map__labels" aria-hidden="true">
-          {map.roads.map((road) => road.labelAt && (
-            <g
-              className="traffic-road-label"
-              key={`${road.id}-label`}
-              style={{ '--road-color': ROAD_COLORS[road.kind] || ROAD_COLORS.avenue }}
-              transform={`translate(${road.labelAt[0]} ${road.labelAt[1]}) rotate(${road.labelAngle || 0}) translate(0 ${road.kind === 'local' ? 22 : 28})`}
-            >
-              <rect x="-66" y="-14" width="132" height="28" rx="14" />
-              <text textAnchor="middle" dominantBaseline="central">
-                {number(road.lengthKm, 1)} km · {road.blocked ? 'bloqueada' : `${number(road.currentTime, 1)} min`}
-              </text>
-            </g>
-          ))}
+          {(session.routes || []).map((route) => {
+            const isUser = route.flowId === 'usuario'
+            const isHighlighted = highlightedFlowId === 'all'
+              ? true
+              : (highlightedFlowId ? highlightedFlowId === route.flowId : isUser)
+            const isDimmed = highlightedFlowId !== 'all' && !isHighlighted
+            const offset = (route.flowId === 'fondo_1' ? -4 : (route.flowId === 'fondo_2' ? 4 : 0))
+            const routePoints = offsetPoints(route.points, offset)
+            const pathData = `M ${routePoints.map(([x, y]) => `${x} ${y}`).join(' L ')}`
+            const routeColor = isUser ? '#00f0ff' : (route.flowId === 'fondo_1' ? '#fbbf24' : '#c084fc')
+            return (
+              <g
+                key={route.id}
+                className={`traffic-route-group ${isHighlighted ? 'traffic-route-group--highlighted' : ''} ${isDimmed ? 'traffic-route-group--dimmed' : ''} ${isUser ? 'traffic-route-group--user' : ''}`}
+                style={{ '--route-color': routeColor }}
+                onClick={() => onSelectFlow && onSelectFlow(route.flowId)}
+              >
+                {/* Halo neón ancho para la ruta activa/seleccionada */}
+                {isHighlighted && (
+                  <path className="traffic-route__glow" d={pathData} />
+                )}
+                {/* Viga sólida de color semántico */}
+                <path className="traffic-route__core" d={pathData} />
+                {/* Línea animada de flujo direccional */}
+                <path className="traffic-route__animated" d={pathData} />
+              </g>
+            )
+          })}
         </g>
 
         <g className="traffic-map__vehicles">
-          {vehicles.map((vehicle, index) => {
-            const position = pointAt(vehicle.timeline, elapsedMs)
-            if (!position) return null
+          {vehicles.map((vehicle) => {
+            const point = pointAt(vehicle.timeline, elapsedMs)
+            if (!point) return null
+            const isSelected = selectedVehicleId === vehicle.id
+            const isUserVehicle = vehicle.flowId === 'usuario'
             return (
               <g
                 key={vehicle.id}
-                className={`traffic-vehicle-group${vehicle.id === selectedVehicleId ? ' traffic-vehicle-group--selected' : ''}`}
-                transform={`translate(${position.x} ${position.y}) rotate(${(position.angle || 0) + 90})`}
-                tabIndex="0"
-                role="button"
-                aria-label={`Inspeccionar ${vehicle.id}`}
+                className={`traffic-vehicle-group ${isSelected ? 'traffic-vehicle-group--selected' : ''} ${isUserVehicle ? 'traffic-vehicle-group--user' : ''}`}
+                transform={`translate(${point.x} ${point.y}) rotate(${point.angle})`}
                 onClick={() => onSelectVehicle(vehicle.id)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' || event.key === ' ') onSelectVehicle(vehicle.id)
-                }}
+                role="button"
+                tabIndex={0}
+                aria-label={isUserVehicle ? `Tu auto (${vehicle.id})` : `Vehículo ${vehicle.id}`}
+                style={{ '--vehicle-color': isUserVehicle ? '#00f7ff' : vehicle.color }}
               >
-                <title>{`${vehicle.id}${vehicle.routeId ? ` · ${vehicle.routeId}` : ''}`}</title>
-                <circle className="traffic-vehicle__halo" r="14" />
-                <g className="traffic-vehicle" style={{ '--vehicle-color': vehicle.color || `var(--vehicle-${(index % 4) + 1})` }}>
-                  <rect className="traffic-vehicle__wheel" x="-8" y="-7" width="3" height="6" rx="1" />
-                  <rect className="traffic-vehicle__wheel" x="5" y="-7" width="3" height="6" rx="1" />
-                  <rect className="traffic-vehicle__wheel" x="-8" y="4" width="3" height="6" rx="1" />
-                  <rect className="traffic-vehicle__wheel" x="5" y="4" width="3" height="6" rx="1" />
-                  <path className="traffic-vehicle__body" d="M-5-11Q0-13 5-11L7-5V8Q7 11 4 12H-4Q-7 11-7 8V-5Z" />
-                  <path className="traffic-vehicle__glass" d="M-4-5 4-5 5-1H-5ZM-5 2H5L4 7H-4Z" />
-                  <path className="traffic-vehicle__roof" d="M-4-6Q0-8 4-6L5 7Q0 9-5 7Z" />
-                  <circle className="traffic-vehicle__light" cx="-3.5" cy="-9.5" r="1.1" />
-                  <circle className="traffic-vehicle__light" cx="3.5" cy="-9.5" r="1.1" />
-                </g>
+                {isUserVehicle && (
+                  <circle className="traffic-vehicle__user-beacon" r="28" />
+                )}
+                <circle className="traffic-vehicle__halo" r={isUserVehicle ? 20 : 16} />
+                <rect className="traffic-vehicle__wheel" x="-11" y="-8.5" width="5" height="3" rx="1.5" />
+                <rect className="traffic-vehicle__wheel" x="6" y="-8.5" width="5" height="3" rx="1.5" />
+                <rect className="traffic-vehicle__wheel" x="-11" y="5.5" width="5" height="3" rx="1.5" />
+                <rect className="traffic-vehicle__wheel" x="6" y="5.5" width="5" height="3" rx="1.5" />
+                <path className="traffic-vehicle__body" d="M -11 -6.5 L 10 -6.5 Q 13 -6.5 13 -3 L 13 3 Q 13 6.5 10 6.5 L -11 6.5 Q -13 6.5 -13 4 L -13 -4 Q -13 -6.5 -11 -6.5 Z" />
+                <rect className="traffic-vehicle__roof" x="-5" y="-4.5" width="10" height="9" rx="2" />
+                <polygon className="traffic-vehicle__glass" points="5,-4 7,-4 9,-2.5 9,2.5 7,4 5,4" />
+                <polygon className="traffic-vehicle__glass" points="-5,-4 -7,-4 -9,-2.5 -9,2.5 -7,4 -5,4" />
+                <circle className="traffic-vehicle__light" cx="12" cy="-4" r={isUserVehicle ? 1.8 : 1.2} />
+                <circle className="traffic-vehicle__light" cx="12" cy="4" r={isUserVehicle ? 1.8 : 1.2} />
+                {isUserVehicle && (
+                  <g className="traffic-vehicle__user-flag" transform={`rotate(${-point.angle})`}>
+                    <rect x="-26" y="-38" width="52" height="18" rx="4" />
+                    <text x="0" y="-25" textAnchor="middle">TU AUTO</text>
+                  </g>
+                )}
+              </g>
+            )
+          })}
+        </g>
+
+        <g className="traffic-map__labels">
+          {map.roads.map((road) => {
+            const [x, y] = road.labelAt
+            return (
+              <g key={`${road.id}-label`} className="traffic-road-label" transform={`translate(${x} ${y}) rotate(${road.labelAngle})`}>
+                <rect x="-38" y="-14" width="76" height="28" rx="6" />
+                <text x="0" y="0" textAnchor="middle" dominantBaseline="central">
+                  {`${number(road.lengthKm, 1)} km`}
+                </text>
               </g>
             )
           })}
@@ -325,7 +392,6 @@ function SimulationMap({ session, elapsedMs, selectedRoad, onSelectRoad, selecte
         <g className="traffic-map__events" aria-hidden="true">
           {map.roads.filter((road) => EVENT_BADGES[road.event] && road.geometry?.length).map((road) => {
             const badge = EVENT_BADGES[road.event]
-            // A quarter of the way along the road, so the badge does not cover the distance label.
             const [x, y] = road.geometry[Math.floor(road.geometry.length / 4)]
             const badgeWidth = badge.label.length * 10 + 28
             return (
@@ -346,8 +412,14 @@ function SimulationMap({ session, elapsedMs, selectedRoad, onSelectRoad, selecte
             const role = isOrigin && isDestination ? 'Origen · destino' : (isOrigin ? 'Origen' : (isDestination ? 'Destino' : 'Conexión'))
             const box = nodeLabelBox(node, centroid)
             return (
-              <g key={node.id} className="traffic-node" transform={`translate(${node.x} ${node.y})`}>
-                <title>{`${node.id} · ${node.district} · ${role}`}</title>
+              <g
+                key={node.id}
+                className="traffic-node"
+                transform={`translate(${node.x} ${node.y})`}
+                style={{ cursor: onSelectNode ? 'pointer' : 'default' }}
+                onClick={() => onSelectNode && onSelectNode(node.id)}
+              >
+                <title>{`${node.id} · ${node.district} · ${role} (Clic para fijar)`}</title>
                 <circle className="traffic-node__glow" r="22" filter="url(#map-glow)" />
                 <circle className="traffic-node__ring" r="17" />
                 <g className="traffic-node__label" transform={`translate(${box.x} ${box.y})`}>
@@ -364,28 +436,64 @@ function SimulationMap({ session, elapsedMs, selectedRoad, onSelectRoad, selecte
           <text x="0" y="-18" textAnchor="middle">N</text>
           <path d="M0-10 9 16 0 10-9 16Z" />
         </g>
-        <g className="traffic-map__scale" transform={`translate(${width - 60 - scalePx} 104)`} aria-hidden="true">
-          <path d={`M0 -5V5M0 5H${scalePx}M${scalePx} -5V5`} />
-          <text x={scalePx / 2} y="-8" textAnchor="middle">{map.geography?.scaleKm || 5} km</text>
+
+        <g className="traffic-map__scale" transform="translate(48 52)" aria-hidden="true">
+          <path d={`M0 0V8H${scalePx}V0`} />
+          <text x={scalePx / 2} y="-8" textAnchor="middle">5 km</text>
         </g>
       </svg>
 
       <div className="traffic-map__footer">
         {userRoute && (
           <div className="traffic-map__summary">
-            <strong>{coordinated ? 'Ruta QAOA' : 'Ruta Dijkstra'}:</strong>{' '}
-            {shortPath(userRoute.nodePath)} · <em>{minutes(userMinutes)}</em>
-            {coordinated && otherMinutes > userMinutes ? ' · evita la congestión' : ''}
+            <span>Ruta del usuario:</span>
+            <strong>{coordinated ? 'Superpose QAOA' : 'Tradicional Dijkstra'}</strong> asigna <em>{shortPath(userRoute.nodePath)}</em> ({minutes(userMinutes)}).
             {otherPath && (
               <span>({coordinated ? 'ruta individual' : 'ruta QAOA'} {shortPath(otherPath)} · {minutes(otherMinutes)})</span>
             )}
           </div>
         )}
+
+        <div className="traffic-map__route-filter">
+          <span>Resaltar:</span>
+          <button
+            type="button"
+            className={highlightedFlowId === 'all' ? 'route-pill route-pill--active' : 'route-pill'}
+            onClick={() => onSelectFlow && onSelectFlow('all')}
+          >
+            Todas
+          </button>
+          <button
+            type="button"
+            className={highlightedFlowId === 'usuario' ? 'route-pill route-pill--active route-pill--user' : 'route-pill'}
+            onClick={() => onSelectFlow && onSelectFlow(highlightedFlowId === 'usuario' ? 'all' : 'usuario')}
+          >
+            <i style={{ background: '#00f0ff' }} />
+            Tu viaje ({shortPath(userRoute?.nodePath)})
+          </button>
+          {(session.flows || []).filter((f) => f.id !== 'usuario').map((flow) => {
+            const isFondo1 = flow.id === 'fondo_1'
+            const color = isFondo1 ? '#fbbf24' : '#c084fc'
+            const isActive = highlightedFlowId === flow.id
+            const flowRoute = (session.routes || []).find((r) => r.flowId === flow.id)
+            return (
+              <button
+                key={flow.id}
+                type="button"
+                className={isActive ? 'route-pill route-pill--active' : 'route-pill'}
+                onClick={() => onSelectFlow && onSelectFlow(isActive ? 'all' : flow.id)}
+              >
+                <i style={{ background: color }} />
+                {flow.id === 'fondo_1' ? 'Fondo 1' : 'Fondo 2'} ({shortPath(flowRoute?.nodePath)})
+              </button>
+            )
+          })}
+        </div>
+
         <div className="traffic-map__key" aria-hidden="true">
-          <span><i className="key-expressway" /><b>cian</b> = vía expresa (3 carriles)</span>
-          <span><i className="key-avenue" /><b>violeta</b> = avenida (2 carriles)</span>
-          <span><i className="key-local" /><b>delgada</b> = un carril</span>
-          <span><i className="key-route" /><b>discontinua</b> = ruta asignada</span>
+          <span><i className="key-road-base" /><b>Gris asfalto</b> = Red vial base</span>
+          <span><i className="key-route-user" /><b>Cian eléctrico</b> = Tu viaje seleccionado</span>
+          <span><i className="key-route-bg" /><b>Ámbar / Violeta</b> = Flujos de fondo</span>
         </div>
       </div>
     </div>
@@ -406,13 +514,19 @@ export default function TrafficLab() {
   const [source, setSource] = useState('backend')
   const [strategy, setStrategy] = useState('coordinated')
   const [vehicleCount, setVehicleCount] = useState(20)
+  const [trip, setTrip] = useState(DEFAULT_USER_TRIP)
+  const [highlightedFlowId, setHighlightedFlowId] = useState('usuario')
+  const [backgroundFlows, setBackgroundFlows] = useState(DEFAULT_BACKGROUND_FLOWS)
+  const [showBackgroundModal, setShowBackgroundModal] = useState(false)
   const [incidentType, setIncidentType] = useState('ACCIDENT')
   const [demoIncidentId, setDemoIncidentId] = useState(MOCK_INCIDENTS[0].id)
   const [selectedRoad, setSelectedRoad] = useState('')
   const [selectedVehicleId, setSelectedVehicleId] = useState('')
+  const [sideTab, setSideTab] = useState('road')
   const [session, setSession] = useState(null)
   const [status, setStatus] = useState('idle')
   const [error, setError] = useState('')
+  const [actionNotice, setActionNotice] = useState('')
   const [elapsedMs, setElapsedMs] = useState(0)
   const [apiLatencyMs, setApiLatencyMs] = useState(null)
   const [incident, setIncident] = useState(null)
@@ -449,22 +563,24 @@ export default function TrafficLab() {
     handleStart()
   }, [])
 
-  async function handleStart() {
+  async function handleStart({ reset = false } = {}) {
     setStatus('connecting')
     setError('')
     setIncident(null)
     setSelectedRoad('')
     setElapsedMs(0)
+    setActionNotice(reset ? 'Red restablecida (POST /api/v1/events/reset)' : 'Consultando topología (GET /api/v1/topology)')
 
     try {
       const result = source === 'demo'
-        ? { data: createMockSession(vehicleCount), latencyMs: null }
-        : await startSimulation({ vehicleCount })
+        ? { data: createMockSession(vehicleCount, trip), latencyMs: null }
+        : await startSimulation({ vehicleCount, trip, backgroundFlows, reset })
+
       if (!result.data?.sessionId || !result.data?.map || !Array.isArray(result.data?.vehicles)) {
         throw new Error('La respuesta no cumple el contrato de simulación.')
       }
       setSession(result.data)
-      setSelectedRoad(source === 'demo' ? MOCK_INCIDENTS.find((item) => item.id === demoIncidentId).roadId : '')
+      setSelectedRoad(source === 'demo' ? MOCK_INCIDENTS.find((item) => item.id === demoIncidentId)?.roadId || '' : '')
       setSelectedVehicleId('')
       setApiLatencyMs(result.latencyMs)
       clockRef.current = { origin: performance.now(), pausedAt: 0 }
@@ -475,16 +591,81 @@ export default function TrafficLab() {
     }
   }
 
+  async function handleSync() {
+    if (source === 'demo') {
+      setActionNotice('En modo demo se reproduce el snapshot estático.')
+      return
+    }
+    setStatus('connecting')
+    setError('')
+    try {
+      const result = await syncSimulation(session, vehicleCount, trip)
+      setSession(result.data)
+      setApiLatencyMs(result.latencyMs)
+      setActionNotice('Topología y rutas sincronizadas (GET /api/v1/topology)')
+      setStatus('running')
+    } catch (err) {
+      setStatus('error')
+      setError(err.message)
+    }
+  }
+
+  async function calculateTrip(targetTrip = trip) {
+    if (targetTrip.origin === targetTrip.destination) {
+      setError('El origen y el destino deben ser nodos distintos.')
+      return
+    }
+    setStatus('recalculating')
+    setError('')
+    setActionNotice(`Optimizando viaje ${targetTrip.origin} → ${targetTrip.destination}...`)
+
+    try {
+      if (source === 'demo') {
+        const nextMock = createMockSession(vehicleCount, targetTrip)
+        setSession(nextMock)
+        setElapsedMs(0)
+        clockRef.current = { origin: performance.now(), pausedAt: 0 }
+        setStatus('running')
+        setActionNotice(`Ruta calculada para ${targetTrip.origin} → ${targetTrip.destination}`)
+        return
+      }
+
+      const result = await startSimulation({ vehicleCount, trip: targetTrip, backgroundFlows, reset: false })
+      setSession(result.data)
+      setApiLatencyMs(result.latencyMs)
+      setElapsedMs(0)
+      clockRef.current = { origin: performance.now(), pausedAt: 0 }
+      setStatus('running')
+      setActionNotice(`Ruta calculada para ${targetTrip.origin} → ${targetTrip.destination} con ${targetTrip.vehicles} auto(s).`)
+    } catch (err) {
+      setStatus('error')
+      setError(err.message)
+    }
+  }
+
+  async function handleTripChange(field, value) {
+    const nextTrip = { ...trip, [field]: value }
+    setTrip(nextTrip)
+    if (nextTrip.origin !== nextTrip.destination) {
+      await calculateTrip(nextTrip)
+    }
+  }
+
+  function handleNodeClick(nodeId) {
+    if (trip.origin === nodeId) return
+    handleTripChange('destination', nodeId)
+  }
+
   function handleSourceChange(nextSource) {
     setSource(nextSource)
     setStatus('idle')
     setError('')
     setElapsedMs(0)
     setIncident(null)
-    setSelectedRoad(nextSource === 'demo' ? MOCK_INCIDENTS.find((item) => item.id === demoIncidentId).roadId : '')
+    setSelectedRoad(nextSource === 'demo' ? MOCK_INCIDENTS.find((item) => item.id === demoIncidentId)?.roadId || '' : '')
     setSelectedVehicleId('')
     setApiLatencyMs(null)
-    setSession(nextSource === 'demo' ? createMockSession(vehicleCount) : null)
+    setSession(nextSource === 'demo' ? createMockSession(vehicleCount, trip) : null)
   }
 
   function handleDemoIncidentChange(nextScenarioId) {
@@ -514,16 +695,19 @@ export default function TrafficLab() {
     const incidentAt = elapsedMs
     setStatus('recalculating')
     setError('')
+    setActionNotice(`Reportando evento en ${selectedRoad} (POST /api/v1/events/report)...`)
 
     try {
       const scenario = MOCK_INCIDENTS.find((item) => item.id === demoIncidentId)
       const incidentPayload = source === 'demo'
         ? { scenarioId: scenario.id, roadId: scenario.roadId, type: scenario.type, simulationTimeMs: incidentAt }
         : { roadId: selectedRoad, type: incidentType, simulationTimeMs: incidentAt }
+
       if (source === 'demo') await new Promise((resolve) => setTimeout(resolve, 650))
       const result = source === 'demo'
         ? { data: applyMockIncident(session, incidentPayload), latencyMs: null }
-        : await reportIncident(session, incidentPayload, vehicleCount)
+        : await reportIncident(session, incidentPayload, vehicleCount, trip)
+
       if (!Array.isArray(result.data?.vehicles)) {
         throw new Error('El backend no devolvió las nuevas trayectorias.')
       }
@@ -533,9 +717,33 @@ export default function TrafficLab() {
       setIncident({ roadId: incidentPayload.roadId, type: incidentPayload.type, atMs: incidentAt })
       clockRef.current = { origin: performance.now() - incidentAt, pausedAt: incidentAt }
       setStatus(wasRunning ? 'running' : 'paused')
+      setActionNotice(`Evento aplicado a ${selectedRoad}: penalización calculada.`)
     } catch (requestError) {
       setStatus(wasRunning ? 'running' : 'paused')
       setError(requestError.message)
+    }
+  }
+
+  async function handleApplyBackgroundFlows(flows) {
+    setShowBackgroundModal(false)
+    setBackgroundFlows(flows)
+    if (source === 'demo') {
+      setActionNotice('Flujos de fondo actualizados en modo local.')
+      return
+    }
+    setStatus('recalculating')
+    setError('')
+    setActionNotice('Actualizando flujos concurrentes (PUT /api/v1/flows/background)...')
+
+    try {
+      const result = await applyBackgroundFlows(session, flows, vehicleCount, trip)
+      setSession(result.data)
+      setApiLatencyMs(result.latencyMs)
+      setStatus('running')
+      setActionNotice('Flujos de fondo guardados en backend y red re-optimizada.')
+    } catch (err) {
+      setStatus('error')
+      setError(err.message)
     }
   }
 
@@ -553,51 +761,210 @@ export default function TrafficLab() {
     ? (strategy === 'coordinated' ? session.keyDecision.coordinatedPath : session.keyDecision.traditionalPath)
     : null
 
+  const activeEventsList = session?.activeEvents || []
+
   return (
     <div className="traffic-lab">
+      {/* 1. BARRA SUPERIOR DE ESTADO Y COMANDOS */}
       <div className="traffic-lab__toolbar" data-ui>
         <div className="traffic-lab__state">
           <span className={`connection-dot connection-dot--${status}`} />
           <div>
             <strong>{STATUS_LABELS[status]}</strong>
-            <span>{session ? `${session.visualVehicleCount || vehicleCount} autos visuales · ${session.modeledVehicles || '—'} modelados · ${flowCount} flujos` : API_BASE}</span>
+            <span>
+              {session
+                ? `${session.visualVehicleCount || vehicleCount} autos visuales · ${session.modeledVehicles || '—'} modelados · ${flowCount} flujos`
+                : API_BASE}
+              {apiLatencyMs ? ` · ${number(apiLatencyMs, 0)} ms` : ''}
+            </span>
           </div>
         </div>
 
         <div className="traffic-lab__controls">
           <div className="source-switch" aria-label="Fuente de las rutas">
-            <button type="button" className={source === 'demo' ? 'source-switch--active' : ''} onClick={() => handleSourceChange('demo')}>Vista previa</button>
-            <button type="button" className={source === 'backend' ? 'source-switch--active' : ''} onClick={() => handleSourceChange('backend')}>Backend</button>
+            <button
+              type="button"
+              className={source === 'demo' ? 'source-switch--active' : ''}
+              onClick={() => handleSourceChange('demo')}
+            >
+              Vista previa
+            </button>
+            <button
+              type="button"
+              className={source === 'backend' ? 'source-switch--active' : ''}
+              onClick={() => handleSourceChange('backend')}
+            >
+              Backend
+            </button>
           </div>
+
+          <button
+            className="lab-control"
+            type="button"
+            title="Sincronizar estado actual de la topología (GET /api/v1/topology)"
+            onClick={handleSync}
+            disabled={status === 'connecting' || status === 'recalculating'}
+          >
+            Sincronizar
+          </button>
+
+          <button
+            className="lab-control"
+            type="button"
+            title="Configurar flujos concurrentes (PUT /api/v1/flows/background)"
+            onClick={() => setShowBackgroundModal(true)}
+          >
+            Flujos de fondo
+          </button>
+
           <label>
-            <span>Vehículos</span>
-            <select value={vehicleCount} onChange={(event) => setVehicleCount(Number(event.target.value))} disabled={status === 'connecting' || status === 'recalculating'}>
+            <span>Autos</span>
+            <select
+              value={vehicleCount}
+              onChange={(event) => setVehicleCount(Number(event.target.value))}
+              disabled={status === 'connecting' || status === 'recalculating'}
+            >
               <option value="10">10</option>
               <option value="20">20</option>
               <option value="50">50</option>
             </select>
           </label>
-          <button className="lab-control lab-control--primary" type="button" onClick={handleStart} disabled={status === 'connecting' || status === 'recalculating'}>
-            {session ? 'Reiniciar' : 'Iniciar simulación'}
+
+          <button
+            className="lab-control lab-control--primary"
+            type="button"
+            onClick={() => handleStart({ reset: true })}
+            disabled={status === 'connecting' || status === 'recalculating'}
+          >
+            Restablecer red
           </button>
-          <button className="lab-control" type="button" onClick={togglePause} disabled={!['running', 'paused'].includes(status)}>
+
+          <button
+            className="lab-control"
+            type="button"
+            onClick={togglePause}
+            disabled={!['running', 'paused'].includes(status)}
+          >
             {status === 'paused' ? 'Continuar' : 'Pausar'}
           </button>
         </div>
       </div>
 
-      {error && (
-        <div className="traffic-lab__error" role="alert">
-          <span>{error}</span>
-          <button type="button" onClick={handleStart}>Reintentar</button>
+      {actionNotice && !error && (
+        <div className="traffic-lab__notice" role="status">
+          <span>{actionNotice}</span>
+          <button type="button" onClick={() => setActionNotice('')}>×</button>
         </div>
       )}
 
+      {error && (
+        <div className="traffic-lab__error" role="alert">
+          <span>{error}</span>
+          <button type="button" onClick={() => handleStart({ reset: false })}>Reintentar</button>
+        </div>
+      )}
+
+      {/* 2. FLUJO 1: PLANIFICAR RUTA MANUAL (POST /api/v1/route/optimize) */}
+      <section className="trip-planner" data-ui aria-label="Ingresar manualmente una ruta">
+        <div className="trip-planner__header">
+          <strong>1. Planificar mi viaje</strong>
+          <span>Ingresa manualmente tu origen y destino para calcular la asignación cuántica frente a Dijkstra.</span>
+        </div>
+
+        <div className="trip-planner__form">
+          <label>
+            <span>Origen</span>
+            <select
+              value={trip.origin}
+              onChange={(e) => handleTripChange('origin', e.target.value)}
+            >
+              {CITY_NODES.map((node) => (
+                <option key={node.id} value={node.id} disabled={node.id === trip.destination}>
+                  {node.id} · {node.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label>
+            <span>Destino</span>
+            <select
+              value={trip.destination}
+              onChange={(e) => handleTripChange('destination', e.target.value)}
+            >
+              {CITY_NODES.map((node) => (
+                <option key={node.id} value={node.id} disabled={node.id === trip.origin}>
+                  {node.id} · {node.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label>
+            <span>Vehículos</span>
+            <input
+              type="number"
+              min="1"
+              max="20"
+              value={trip.vehicles || 1}
+              onChange={(e) => handleTripChange('vehicles', Math.max(1, Number(e.target.value)))}
+            />
+          </label>
+
+          <button
+            type="button"
+            className="trip-planner__button"
+            onClick={() => calculateTrip(trip)}
+            disabled={trip.origin === trip.destination || status === 'recalculating'}
+          >
+            Optimizar viaje
+          </button>
+        </div>
+
+        {/* Desglose detallado del usuario según el contrato */}
+        {comparison && (
+          <div className="trip-breakdown">
+            <div className="trip-breakdown__col">
+              <span className="trip-breakdown__tag trip-breakdown__tag--selfish">Tradicional (Dijkstra)</span>
+              <div className="trip-breakdown__time">
+                <strong>{minutes(comparison.individual.userEstimatedMinutes)}</strong>
+                <small>Tiempo estimado</small>
+              </div>
+              <div className="trip-breakdown__parts">
+                <span>Tiempo libre: <b>{minutes(comparison.individual.userTravelTime)}</b></span>
+                <span>Retraso congestión: <b>+{minutes(comparison.individual.userCongestionPenalty)}</b></span>
+              </div>
+            </div>
+
+            <div className="trip-breakdown__divider">
+              {comparison.userImprovementPct > 0 ? (
+                <span className="improvement-pill">-{number(comparison.userImprovementPct, 1)}% tiempo</span>
+              ) : (
+                <span className="improvement-pill improvement-pill--neutral">Coordinado</span>
+              )}
+            </div>
+
+            <div className="trip-breakdown__col trip-breakdown__col--superpose">
+              <span className="trip-breakdown__tag trip-breakdown__tag--qaoa">Superpose (QAOA)</span>
+              <div className="trip-breakdown__time">
+                <strong>{minutes(comparison.coordinated.userEstimatedMinutes)}</strong>
+                <small>Tiempo conjunto</small>
+              </div>
+              <div className="trip-breakdown__parts">
+                <span>Tiempo libre: <b>{minutes(comparison.coordinated.userTravelTime)}</b></span>
+                <span>Retraso congestión: <b>+{minutes(comparison.coordinated.userCongestionPenalty)}</b></span>
+              </div>
+            </div>
+          </div>
+        )}
+      </section>
+
+      {/* 3. PRUEBA A/B Y CONMUTADOR DE ESTRATEGIA */}
       {comparison && (
         <div className="strategy-test" data-ui>
           <div className="strategy-test__intro">
-            <strong>Prueba A/B · misma ciudad, mismos autos</strong>
-            <span>Cambia únicamente la forma de asignar las rutas.</span>
+            <strong>Prueba A/B · Red Completa</strong>
+            <span>Compara el impacto de la coordinación global sobre toda la ciudad.</span>
           </div>
           <div className="strategy-switch" aria-label="Estrategia de asignación">
             <button
@@ -608,7 +975,7 @@ export default function TrafficLab() {
             >
               <span>Tradicional</span>
               <strong>{minutes(comparison.individual.userEstimatedMinutes)}</strong>
-              <small>Una ruta mínima por flujo</small>
+              <small>Dijkstra egoísta por flujo</small>
             </button>
             <button
               type="button"
@@ -618,7 +985,7 @@ export default function TrafficLab() {
             >
               <span>Superpose · Qiskit</span>
               <strong>{minutes(comparison.coordinated.userEstimatedMinutes)}</strong>
-              <small>Una asignación para toda la red</small>
+              <small>Optimización combinatoria QAOA</small>
             </button>
           </div>
           {session.keyDecision && (
@@ -627,10 +994,15 @@ export default function TrafficLab() {
               <strong>{strategy === 'coordinated' ? 'Superpose' : 'Tradicional'} asigna {activePath}</strong>
             </div>
           )}
-          <p>Superpose reduce el costo total de la red en <strong>{number(comparison.systemImprovementPct, 1)}%</strong>{congestionDifference > 0 ? ` y la saturación máxima en ${number(congestionDifference, 1)} puntos` : ''}.</p>
+          <p>
+            Superpose reduce el costo total de la red en <strong>{number(comparison.systemImprovementPct, 1)}%</strong>
+            {congestionDifference > 0 ? ` y la saturación máxima en ${number(congestionDifference, 1)} puntos` : ''}.
+            {comparison.userTimeSaved ? ` El usuario ahorra ${number(comparison.userTimeSaved, 1)} minutos.` : ''}
+          </p>
         </div>
       )}
 
+      {/* 4. ESCENARIO CENTRAL: MAPA SVG + PANEL LATERAL (FLUJO 2: INCIDENTES Y FICHA DE VÍA) */}
       <div className="traffic-lab__stage" data-ui>
         <SimulationMap
           session={visibleSession}
@@ -638,45 +1010,190 @@ export default function TrafficLab() {
           selectedRoad={selectedRoad}
           onSelectRoad={setSelectedRoad}
           selectedVehicleId={selectedVehicleId}
-          onSelectVehicle={setSelectedVehicleId}
-          roadsInteractive={source === 'backend'}
+          onSelectVehicle={(id) => {
+            setSelectedVehicleId(id)
+            setSideTab('vehicle')
+            const v = visibleSession?.vehicles?.find((veh) => veh.id === id)
+            if (v?.flowId) setHighlightedFlowId(v.flowId)
+          }}
+          roadsInteractive={true}
+          onSelectNode={handleNodeClick}
+          highlightedFlowId={highlightedFlowId}
+          onSelectFlow={setHighlightedFlowId}
         />
+
         <aside className="incident-panel">
-          <div>
-            <strong>Provocar un cambio</strong>
-            <p>{source === 'demo' ? 'El incidente se aplica a ambas estrategias para compararlas en igualdad de condiciones.' : 'Selecciona una vía y envía el incidente al backend.'}</p>
+          {/* Navegación interna del panel lateral */}
+          <div className="side-tabs">
+            <button
+              type="button"
+              className={sideTab === 'road' ? 'side-tab--active' : ''}
+              onClick={() => setSideTab('road')}
+            >
+              Vía / Reporte
+            </button>
+            <button
+              type="button"
+              className={sideTab === 'events' ? 'side-tab--active' : ''}
+              onClick={() => setSideTab('events')}
+            >
+              Incidentes ({activeEventsList.length})
+            </button>
+            {selectedVehicle && (
+              <button
+                type="button"
+                className={sideTab === 'vehicle' ? 'side-tab--active' : ''}
+                onClick={() => setSideTab('vehicle')}
+              >
+                Auto
+              </button>
+            )}
           </div>
-          {source === 'demo' ? (
-            <label>
-              <span>Escenario</span>
-              <select value={demoIncidentId} onChange={(event) => handleDemoIncidentChange(event.target.value)}>
-                {MOCK_INCIDENTS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
-              </select>
-            </label>
-          ) : (
-            <label>
-              <span>Tipo de incidente</span>
-              <select value={incidentType} onChange={(event) => setIncidentType(event.target.value)}>
-                {INCIDENTS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-              </select>
-            </label>
-          )}
-          <div className="incident-panel__road">
-            <span>Vía seleccionada</span>
-            <strong>{source === 'demo' ? MOCK_INCIDENTS.find((item) => item.id === demoIncidentId).roadLabel : (selectedRoadData ? `${selectedRoadData.label} · ${selectedRoadData.lanes} carriles` : 'Haz clic en el mapa')}</strong>
-          </div>
-          <button type="button" onClick={handleIncident} disabled={!session || !selectedRoad || !['running', 'paused'].includes(status)}>
-            Aplicar incidente
-          </button>
-          {incident && <small>Último evento aplicado en {seconds(incident.atMs / 1000)}.</small>}
-          {selectedVehicle ? (
-            <div className="vehicle-inspector">
-              <span>{selectedVehicle.id} · {selectedVehicle.rerouted ? 'Redirigido' : 'Ruta mantenida'}</span>
-              <strong>{selectedVehicle.flowLabel}</strong>
-              <p>{selectedVehicle.explanation}</p>
-              <small>Ruta {selectedVehicle.routeId} · ETA {minutes(selectedVehicle.estimatedTravelMinutes)} · representa ~{number(selectedVehicle.representedVehicles, 1)} vehículos</small>
+
+          {/* TAB 1: FICHA TÉCNICA DE VÍA Y REPORTE DE INCIDENTE */}
+          {sideTab === 'road' && (
+            <div className="side-content">
+              <div>
+                <strong>2. Reportar incidente en vía</strong>
+                <p>
+                  {source === 'demo'
+                    ? 'Selecciona un escenario de prueba en modo demostración.'
+                    : 'Haz clic en una arista del mapa para ver sus especificaciones y registrar un evento en el backend.'}
+                </p>
+              </div>
+
+              {source === 'demo' ? (
+                <label>
+                  <span>Escenario de prueba</span>
+                  <select
+                    value={demoIncidentId}
+                    onChange={(event) => handleDemoIncidentChange(event.target.value)}
+                  >
+                    {MOCK_INCIDENTS.map((item) => (
+                      <option key={item.id} value={item.id}>{item.label}</option>
+                    ))}
+                  </select>
+                </label>
+              ) : (
+                <label>
+                  <span>Tipo de evento (POST /api/v1/events/report)</span>
+                  <select
+                    value={incidentType}
+                    onChange={(event) => setIncidentType(event.target.value)}
+                  >
+                    {INCIDENTS.map((item) => (
+                      <option key={item.value} value={item.value}>
+                        {item.label} — {item.description}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+
+              {/* Ficha técnica completa de la vía devuelta por el backend */}
+              {selectedRoadData ? (
+                <div className="road-tech-card">
+                  <div className="road-tech-card__header">
+                    <span>Vía seleccionada</span>
+                    <strong>{selectedRoadData.label}</strong>
+                    <small>Tipo: {selectedRoadData.kind} · {selectedRoadData.lanes} carriles</small>
+                  </div>
+                  <div className="road-tech-card__grid">
+                    <div><span>Longitud</span><b>{number(selectedRoadData.lengthKm, 2)} km</b></div>
+                    <div><span>Velocidad</span><b>{number(selectedRoadData.speedKmh, 0)} km/h</b></div>
+                    <div><span>Tiempo libre</span><b>{minutes(selectedRoadData.baseTime)}</b></div>
+                    <div><span>Tiempo actual</span><b>{minutes(selectedRoadData.currentTime)}</b></div>
+                    <div><span>Capacidad</span><b>{selectedRoadData.capacity} veh</b></div>
+                    <div><span>Carga actual</span><b>{number(selectedRoadData.load, 1)} veh</b></div>
+                    <div className="road-tech-card__full">
+                      <span>Saturación ({number(selectedRoadData.saturation * 100, 1)}%)</span>
+                      <div className="saturation-bar">
+                        <i style={{ width: `${Math.min(100, selectedRoadData.saturation * 100)}%` }} />
+                      </div>
+                    </div>
+                    {selectedRoadData.event !== 'NORMAL' && (
+                      <div className="road-tech-card__full road-tech-card__badge">
+                        <span>Estado activo:</span>
+                        <b>{selectedRoadData.event}</b>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="road-tech-card road-tech-card--empty">
+                  <span>Haz clic sobre una vía en el mapa para inspeccionarla</span>
+                </div>
+              )}
+
+              <button
+                type="button"
+                className="incident-apply-button"
+                onClick={handleIncident}
+                disabled={!session || !selectedRoad || !['running', 'paused'].includes(status)}
+              >
+                Aplicar incidente a la red
+              </button>
             </div>
-          ) : <small>Selecciona un auto en el mapa para explicar su asignación.</small>}
+          )}
+
+          {/* TAB 2: LISTA DE EVENTOS ACTIVOS */}
+          {sideTab === 'events' && (
+            <div className="side-content">
+              <div>
+                <strong>Incidentes activos en la red</strong>
+                <p>Eventos vigentes en memoria del backend que modifican pesos y penalizaciones.</p>
+              </div>
+
+              {activeEventsList.length === 0 ? (
+                <div className="active-events-empty">
+                  <span>✓ Red en flujo libre (0 incidentes activos)</span>
+                </div>
+              ) : (
+                <div className="active-events-list">
+                  {activeEventsList.map((evt, idx) => {
+                    const roadKey = `${evt.source}--${evt.target}`
+                    return (
+                      <div
+                        key={idx}
+                        className={`active-event-item active-event-item--${evt.event_type?.toLowerCase()}`}
+                        onClick={() => {
+                          setSelectedRoad(roadKey)
+                          setSideTab('road')
+                        }}
+                      >
+                        <div className="active-event-item__badge">{evt.event_type}</div>
+                        <strong>{evt.source.replace('NODO_', '')} ↔ {evt.target.replace('NODO_', '')}</strong>
+                        <small>Haz clic para inspeccionar vía</small>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+
+              <button
+                type="button"
+                className="lab-control"
+                onClick={() => handleStart({ reset: true })}
+                style={{ marginTop: 'auto' }}
+              >
+                Limpiar todos los eventos (Reset)
+              </button>
+            </div>
+          )}
+
+          {/* TAB 3: INSPECTOR DE AUTO */}
+          {sideTab === 'vehicle' && selectedVehicle && (
+            <div className="side-content">
+              <div className="vehicle-inspector">
+                <span>{selectedVehicle.id} · {selectedVehicle.rerouted ? 'Redirigido' : 'Ruta mantenida'}</span>
+                <strong>{selectedVehicle.flowLabel}</strong>
+                <p>{selectedVehicle.explanation}</p>
+                <small>
+                  Ruta {selectedVehicle.routeId} · ETA {minutes(selectedVehicle.estimatedTravelMinutes)} · representa ~{number(selectedVehicle.representedVehicles, 1)} vehículos
+                </small>
+              </div>
+            </div>
+          )}
         </aside>
       </div>
 
@@ -684,40 +1201,207 @@ export default function TrafficLab() {
         <i style={{ width: `${progress}%` }} />
       </div>
 
+      {/* 5. EVIDENCIA CUÁNTICA Y TELEMETRÍA EXTENDIDA */}
       {solver && comparison && (
         <div className="traffic-lab__evidence" data-ui>
           <div className="solver-preview">
             <div>
-              <strong>{strategy === 'coordinated' ? 'Evidencia Qiskit' : 'Referencia tradicional'}</strong>
-              <span>{solver.mode}{strategy === 'coordinated' ? ` · ${number(solver.problem.binaryVariables)} variables · ${number(solver.problem.constraints)} flujos` : ` · ${flowCount} rutas independientes`}</span>
+              <strong>{strategy === 'coordinated' ? 'Evidencia Qiskit (QAOA)' : 'Referencia clásica (Dijkstra)'}</strong>
+              <span>
+                {solver.mode}
+                {strategy === 'coordinated'
+                  ? ` · ${number(solver.problem.binaryVariables)} variables · ${number(solver.problem.constraints)} flujos`
+                  : ` · ${flowCount} rutas independientes`}
+              </span>
             </div>
             <ol>
-              {solver.facts.map((fact) => <li key={fact.id}><span>{fact.label}</span><strong className="num">{fact.value}</strong></li>)}
+              {solver.facts.map((fact) => (
+                <li key={fact.id}>
+                  <span>{fact.label}</span>
+                  <strong className="num">{fact.value}</strong>
+                </li>
+              ))}
             </ol>
+
+            {/* Desglose explicativo del bitstring óptimo si es QAOA */}
+            {strategy === 'coordinated' && solver.facts.find((f) => f.id === 'bitstring') && (
+              <div className="bitstring-explanation">
+                <span>Asignación binaria:</span>
+                <code>
+                  {solver.facts.find((f) => f.id === 'bitstring')?.value || '—'}
+                </code>
+                <small>Pares de qubits indican la ruta asignada a cada flujo (Ruta 1 vs Ruta 2 alternativa).</small>
+              </div>
+            )}
+
+            {/* Visualización de top_probabilities del circuito si existen */}
+            {strategy === 'coordinated' && solver.topProbabilities?.length > 0 && (
+              <div className="quantum-probabilities">
+                <span>Distribución de estados cuánticos medidos:</span>
+                <div className="quantum-prob-bars">
+                  {solver.topProbabilities.slice(0, 3).map((prob, idx) => (
+                    <div key={idx} className="quantum-prob-row">
+                      <code>{prob.bitstring}</code>
+                      <div className="quantum-prob-track">
+                        <i style={{ width: `${Math.min(100, (prob.probability || 0) * 100 * 5)}%` }} />
+                      </div>
+                      <small>{number((prob.probability || 0) * 100, 2)}%</small>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
+
           <div className="strategy-comparison">
             <div className="strategy-comparison__heading">
-              <strong>Individual vs. coordinada</strong>
-              <span>{source === 'demo' ? 'Snapshot versionado del backend' : 'Respuesta actual de Superpose API'}</span>
+              <strong>Individual vs. Coordinada</strong>
+              <span>{source === 'demo' ? 'Snapshot versionado' : 'Respuesta real de Superpose API'}</span>
             </div>
             <div className="strategy-comparison__table">
-              <span /> <span className={strategy === 'traditional' ? 'is-active' : ''}>Tradicional</span><span className={strategy === 'coordinated' ? 'is-active' : ''}>Superpose</span>
-              <strong>Usuario estimado</strong><span className="num">{minutes(comparison.individual.userEstimatedMinutes)}</span><span className="num">{minutes(comparison.coordinated.userEstimatedMinutes)}</span>
-              <strong>Costo total red</strong><span className="num">{number(comparison.individual.systemCost, 1)}</span><span className="num">{number(comparison.coordinated.systemCost, 1)}</span>
-              <strong>Saturación máxima</strong><span className="num">{number(comparison.individual.maxCongestionPct)}%</span><span className="num">{number(comparison.coordinated.maxCongestionPct)}%</span>
-              <strong>Cálculo solver</strong><span className="num">—</span><span className="num">{number(comparison.coordinated.computeMs, 1)} ms</span>
+              <span />
+              <span className={strategy === 'traditional' ? 'is-active' : ''}>Tradicional</span>
+              <span className={strategy === 'coordinated' ? 'is-active' : ''}>Superpose</span>
+
+              <strong>Usuario estimado</strong>
+              <span className="num">{minutes(comparison.individual.userEstimatedMinutes)}</span>
+              <span className="num">{minutes(comparison.coordinated.userEstimatedMinutes)}</span>
+
+              <strong>Tiempo libre de viaje</strong>
+              <span className="num">{minutes(comparison.individual.userTravelTime)}</span>
+              <span className="num">{minutes(comparison.coordinated.userTravelTime)}</span>
+
+              <strong>Retraso por congestión</strong>
+              <span className="num">{minutes(comparison.individual.userCongestionPenalty)}</span>
+              <span className="num">{minutes(comparison.coordinated.userCongestionPenalty)}</span>
+
+              <strong>Costo total red</strong>
+              <span className="num">{number(comparison.individual.systemCost, 1)}</span>
+              <span className="num">{number(comparison.coordinated.systemCost, 1)}</span>
+
+              <strong>Saturación máxima</strong>
+              <span className="num">{number(comparison.individual.maxCongestionPct)}%</span>
+              <span className="num">{number(comparison.coordinated.maxCongestionPct)}%</span>
+
+              <strong>Cálculo solver</strong>
+              <span className="num">—</span>
+              <span className="num">{number(comparison.coordinated.computeMs, 1)} ms</span>
             </div>
           </div>
         </div>
       )}
 
+      {/* 6. MÉTRICAS INFERIORES */}
       <div className="traffic-lab__metrics" data-ui>
         <Metric label="Tiempo simulado" value={seconds(elapsedMs / 1000)} note="Reloj de la sesión" />
-        <Metric label="Cálculo del solver" value={Number.isFinite(Number(metrics.computeMs)) ? `${number(metrics.computeMs, 1)} ms` : '—'} note={strategy === 'coordinated' ? 'quantum_telemetry.execution_time_ms' : 'No informado por el backend'} />
-        <Metric label="Latencia API" value={apiLatencyMs === null ? '—' : `${number(apiLatencyMs, 1)} ms`} note={source === 'demo' ? 'Sin consulta en modo demo' : 'Ida, proceso y vuelta'} />
-        <Metric label="Vehículos modelados" value={number(metrics.modeledVehicles)} note={`${visibleSession?.vehicles?.length || vehicleCount} autos visuales`} />
-        <Metric label="Costo medio por flujo" value={minutes(metrics.averageTravelMinutes)} note={`Costo agregado ÷ ${flowCount} flujos`} />
-        <Metric label="Saturación máxima" value={Number.isFinite(Number(metrics.maxCongestionPct)) ? `${number(metrics.maxCongestionPct, 1)}%` : '—'} note="edge_loads del backend" />
+        <Metric label="Tiempo usuario" value={minutes(metrics.userEstimatedMinutes)} note="ETA estimada" />
+        <Metric label="Autos reasignados" value={metrics.reroutedVehicles || 0} note="Ruta alterada por QAOA" />
+        <Metric label="Saturación pico" value={`${number(metrics.maxCongestionPct, 0)}%`} note="Arista más cargada" />
+        <Metric label="Ahorro de red" value={comparison ? `${number(comparison.systemImprovementPct, 1)}%` : '—'} note="Costo total del sistema" />
+        <Metric label="Latencia API" value={apiLatencyMs ? `${number(apiLatencyMs, 0)} ms` : '—'} note="Tiempo de red + solver" />
+      </div>
+
+      {/* 7. MODAL DE FLUJOS DE FONDO (PUT /api/v1/flows/background) */}
+      {showBackgroundModal && (
+        <BackgroundFlowsModal
+          flows={backgroundFlows}
+          onClose={() => setShowBackgroundModal(false)}
+          onSave={handleApplyBackgroundFlows}
+        />
+      )}
+    </div>
+  )
+}
+
+function BackgroundFlowsModal({ flows, onClose, onSave }) {
+  const [localFlows, setLocalFlows] = useState(flows)
+
+  function handlePreset(preset) {
+    setLocalFlows(preset.flows)
+  }
+
+  function handleUpdateFlow(index, field, value) {
+    setLocalFlows((current) => current.map((f, i) => (i === index ? { ...f, [field]: value } : f)))
+  }
+
+  return (
+    <div className="background-modal-backdrop" onClick={onClose} role="dialog" aria-modal="true">
+      <div className="background-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="background-modal__header">
+          <div>
+            <strong>Configuración de Flujos de Fondo</strong>
+            <p>Define los dos flujos vehiculares concurrentes que compiten en la red (PUT /api/v1/flows/background).</p>
+          </div>
+          <button type="button" className="background-modal__close" onClick={onClose}>×</button>
+        </div>
+
+        <div className="background-modal__presets">
+          <span>Presets rápidos:</span>
+          {BACKGROUND_PRESETS.map((p, idx) => (
+            <button key={idx} type="button" onClick={() => handlePreset(p)}>
+              {p.name}
+            </button>
+          ))}
+        </div>
+
+        <div className="background-modal__flows">
+          {localFlows.map((flow, idx) => (
+            <div key={idx} className="background-flow-card">
+              <strong>Flujo de fondo {idx + 1}</strong>
+              <div className="background-flow-card__fields">
+                <label>
+                  <span>Origen</span>
+                  <select
+                    value={flow.origin}
+                    onChange={(e) => handleUpdateFlow(idx, 'origin', e.target.value)}
+                  >
+                    {CITY_NODES.map((n) => (
+                      <option key={n.id} value={n.id} disabled={n.id === flow.destination}>
+                        {n.id} · {n.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span>Destino</span>
+                  <select
+                    value={flow.destination}
+                    onChange={(e) => handleUpdateFlow(idx, 'destination', e.target.value)}
+                  >
+                    {CITY_NODES.map((n) => (
+                      <option key={n.id} value={n.id} disabled={n.id === flow.origin}>
+                        {n.id} · {n.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span>Vehículos</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="100"
+                    value={flow.vehicles}
+                    onChange={(e) => handleUpdateFlow(idx, 'vehicles', Math.max(1, Number(e.target.value)))}
+                  />
+                </label>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="background-modal__actions">
+          <button type="button" className="lab-control" onClick={onClose}>
+            Cancelar
+          </button>
+          <button
+            type="button"
+            className="lab-control lab-control--primary"
+            onClick={() => onSave(localFlows)}
+          >
+            Guardar y re-optimizar
+          </button>
+        </div>
       </div>
     </div>
   )

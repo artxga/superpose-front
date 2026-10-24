@@ -128,10 +128,61 @@ function scenarioOptimization(scenario, topology) {
   })
 }
 
-export function createMockSession(visualVehicleCount = 20) {
+const GRAPH_ADJACENCY = {
+  NODO_A: ['NODO_C', 'NODO_B'],
+  NODO_B: ['NODO_A', 'NODO_D', 'NODO_E'],
+  NODO_C: ['NODO_A', 'NODO_D', 'NODO_E'],
+  NODO_D: ['NODO_C', 'NODO_F', 'NODO_B'],
+  NODO_E: ['NODO_B', 'NODO_F', 'NODO_C'],
+  NODO_F: ['NODO_D', 'NODO_E'],
+}
+
+function findPaths(origin, destination) {
+  if (origin === destination) return [[origin]]
+  const queue = [[origin]]
+  const found = []
+  while (queue.length > 0 && found.length < 3) {
+    const path = queue.shift()
+    const last = path[path.length - 1]
+    if (last === destination) {
+      found.push(path)
+      continue
+    }
+    const neighbors = GRAPH_ADJACENCY[last] || []
+    for (const neighbor of neighbors) {
+      if (!path.includes(neighbor) && path.length <= 4) {
+        queue.push([...path, neighbor])
+      }
+    }
+  }
+  return found.length > 0 ? found : [[origin, destination]]
+}
+
+export function createMockSession(visualVehicleCount = 20, trip = null) {
+  let optimization = BACKEND_OPTIMIZATION_SNAPSHOT
+  if (trip && (trip.origin !== 'NODO_A' || trip.destination !== 'NODO_F')) {
+    const candidatePaths = findPaths(trip.origin, trip.destination)
+    const selfishRoute = candidatePaths[0]
+    const qaoaRoute = candidatePaths.length > 1 ? candidatePaths[1] : candidatePaths[0]
+    const flows = BASE_FLOWS.map((flow) => (flow.name === 'usuario'
+      ? {
+        ...flow,
+        origin: trip.origin,
+        destination: trip.destination,
+        vehicles: trip.vehicles || 1,
+        qaoa_route: qaoaRoute,
+        selfish_route: selfishRoute,
+      }
+      : flow))
+    optimization = {
+      ...BACKEND_OPTIMIZATION_SNAPSHOT,
+      flows,
+      edge_loads: buildEdgeLoads(BACKEND_TOPOLOGY_SNAPSHOT, flows),
+    }
+  }
   return adaptSuperposeResponse({
     topology: BACKEND_TOPOLOGY_SNAPSHOT,
-    optimization: BACKEND_OPTIMIZATION_SNAPSHOT,
+    optimization,
     visualVehicleCount,
     source: 'backend-snapshot',
   })

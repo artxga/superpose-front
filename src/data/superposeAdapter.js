@@ -5,9 +5,9 @@ const KM_PER_DEGREE_LAT = 110.57
 const BLOCKED_MINUTES = 1000
 
 const FLOW_COLORS = {
-  usuario: '#f4fbff',
-  fondo_1: '#f0c96a',
-  fondo_2: '#91d6a8',
+  usuario: '#00f0ff',
+  fondo_1: '#fbbf24',
+  fondo_2: '#c084fc',
 }
 
 const EDGE_CURVATURE = {
@@ -138,6 +138,7 @@ export function buildSuperposeMap(topology, strategy = 'coordinated', edgeLoads 
       speedKmh: edge.speed_kmh,
       baseTime: edge.base_time,
       currentTime: edge.current_time,
+      currentPenalty: edge.current_penalty,
       blocked: Number(edge.current_time) >= BLOCKED_MINUTES,
       capacity: edge.capacity,
       load: vehicles,
@@ -311,6 +312,9 @@ function solverFor(strategy, optimization, flowCount, visualVehicleCount) {
       candidateRoutes: telemetry.variables?.length ?? 0,
       visualVehicles: visualVehicleCount,
     },
+    topProbabilities: telemetry.top_probabilities || [],
+    quboScale: telemetry.qubo_scale || telemetry.objective_scale || null,
+    telemetry,
   }
 }
 
@@ -352,18 +356,55 @@ function strategyView(strategy, topology, optimization, visualVehicleCount) {
 function firstDifferentDecision(strategyViews, flows) {
   const coordinatedRoutes = strategyViews.coordinated.routes
   const traditionalRoutes = strategyViews.traditional.routes
+
+  // 1. Prioritize the user's trip!
+  const userCoordinated = coordinatedRoutes.find((r) => r.flowId === 'usuario')
+  const userTraditional = traditionalRoutes.find((r) => r.flowId === 'usuario')
+  const userFlow = flows.find((f) => f.name === 'usuario')
+
+  if (userCoordinated && userTraditional && userFlow) {
+    const userDiffers = userCoordinated.nodePath.join('|') !== userTraditional.nodePath.join('|')
+    if (userDiffers) {
+      return {
+        flowLabel: `Tu viaje (Usuario) · ${shortNode(userFlow.origin)} → ${shortNode(userFlow.destination)}`,
+        traditionalPath: userTraditional.nodePath.map(shortNode).join(' → '),
+        coordinatedPath: userCoordinated.nodePath.map(shortNode).join(' → '),
+        isUser: true,
+      }
+    }
+  }
+
+  // 2. If user route is identical in both strategies, find which background flow is coordinated
   const coordinated = coordinatedRoutes.find((route) => {
     const traditional = traditionalRoutes.find((candidate) => candidate.flowId === route.flowId)
     return traditional?.nodePath.join('|') !== route.nodePath.join('|')
   })
-  if (!coordinated) return null
-  const traditional = traditionalRoutes.find((route) => route.flowId === coordinated.flowId)
-  const flow = flows.find((candidate) => candidate.name === coordinated.flowId)
-  return {
-    flowLabel: `${flow.name === 'usuario' ? 'Usuario' : `Flujo ${flow.name.replace('_', ' ')}`} · ${shortNode(flow.origin)} → ${shortNode(flow.destination)}`,
-    traditionalPath: traditional.nodePath.map(shortNode).join(' → '),
-    coordinatedPath: coordinated.nodePath.map(shortNode).join(' → '),
+
+  if (coordinated) {
+    const traditional = traditionalRoutes.find((candidate) => candidate.flowId === coordinated.flowId)
+    const flow = flows.find((candidate) => candidate.name === coordinated.flowId)
+    const userSummary = userCoordinated ? userCoordinated.nodePath.map(shortNode).join(' → ') : ''
+    return {
+      flowLabel: `Desvío de apoyo · Flujo ${flow.name.replace('_', ' ')} · ${shortNode(flow.origin)} → ${shortNode(flow.destination)} (Tu viaje sigue por ${userSummary})`,
+      traditionalPath: traditional.nodePath.map(shortNode).join(' → '),
+      coordinatedPath: coordinated.nodePath.map(shortNode).join(' → '),
+      isUser: false,
+    }
   }
+
+  // 3. Fallback: show the user's route
+  if (userCoordinated && userFlow) {
+    const pathStr = userCoordinated.nodePath.map(shortNode).join(' → ')
+    return {
+      flowLabel: `Tu viaje (Usuario) · ${shortNode(userFlow.origin)} → ${shortNode(userFlow.destination)}`,
+      traditionalPath: pathStr,
+      coordinatedPath: pathStr,
+      isUser: true,
+      identical: true,
+    }
+  }
+
+  return null
 }
 
 export function adaptSuperposeResponse({
@@ -380,18 +421,24 @@ export function adaptSuperposeResponse({
   const comparison = {
     individual: {
       userEstimatedMinutes: optimization.selfish.estimated_time,
+      userTravelTime: optimization.selfish.travel_time,
+      userCongestionPenalty: optimization.selfish.congestion_penalty,
       systemCost: optimization.comparison.system_cost_selfish,
       maxCongestionPct: strategyViews.traditional.metrics.maxCongestionPct,
       computeMs: null,
     },
     coordinated: {
       userEstimatedMinutes: optimization.optimized.estimated_time,
+      userTravelTime: optimization.optimized.travel_time,
+      userCongestionPenalty: optimization.optimized.congestion_penalty,
       systemCost: optimization.comparison.system_cost_optimized,
       maxCongestionPct: strategyViews.coordinated.metrics.maxCongestionPct,
       computeMs: optimization.quantum_telemetry.execution_time_ms,
     },
+    userTimeSaved: optimization.comparison.user_time_saved,
     userImprovementPct: optimization.comparison.user_improvement_pct,
     systemImprovementPct: optimization.comparison.system_improvement_pct,
+    totalTimeMs: optimization.total_time_ms,
   }
   const modeledVehicles = optimization.flows.reduce((sum, flow) => sum + flow.vehicles, 0)
   return {

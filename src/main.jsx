@@ -186,12 +186,12 @@ function App() {
             <a className="button button--dark" href="#laboratorio">Volver al laboratorio <Arrow /></a>
           </div>
           <div className="closing__panel reveal" data-ui style={{ '--delay': '100ms' }}>
-            <span>Próxima integración</span>
-            <strong>Motor de simulación</strong>
-            <p>Entrada de eventos, comparación de estrategias y actualización de rutas en tiempo real.</p>
+            <span>Integración completada</span>
+            <strong>Plataforma Superpose</strong>
+            <p>Entrada de eventos, comparación de estrategias y optimización de rutas en tiempo real.</p>
             <div><span>Frontend local</span><b>Listo</b></div>
-            <div><span>Motor cuántico</span><b>Pendiente</b></div>
-            <div><span>Datos de tráfico</span><b>Pendiente</b></div>
+            <div><span>Motor cuántico</span><b>Listo</b></div>
+            <div><span>Datos de tráfico</span><b>Listo</b></div>
           </div>
         </section>
       </main>

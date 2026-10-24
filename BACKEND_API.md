@@ -1,55 +1,54 @@
 # Integración de Superpose API
 
-El frontend no calcula rutas. Proyecta el grafo geográfico, anima los flujos y compara las dos asignaciones devueltas por el backend.
+El frontend no calcula rutas. Proyecta el grafo geográfico, anima los flujos y compara las dos asignaciones devueltas por el backend (Superpose con QAOA vs. Enrutamiento clásico con Dijkstra).
 
 ## Configuración
 
 ```env
 VITE_SIMULATION_API_URL=https://superpose-api.vercel.app
+VITE_SIMULATION_TIMEOUT_MS=30000
 ```
 
 Para un backend local usa `http://localhost:8000`.
 
-Si la variable no existe, el cliente usa esa misma URL. Cada petición se cancela tras `VITE_SIMULATION_TIMEOUT_MS` milisegundos (30000 por defecto). El backend permite CORS y expone los endpoints bajo `/api/v1`.
+## Endpoints integrados y flujo en la aplicación
 
-## Flujo conectado
+La aplicación consume activamente los **5 endpoints** oficiales del backend:
 
-Al iniciar:
+### 1. `GET /api/v1/topology`
+* **Uso:** El botón **"Sincronizar"** en la barra superior consulta el estado actual de la red en memoria sin destruirlo.
+* **Datos consumidos:** Nombres de distritos de Lima (`node_details`), métricas de vías (`length_km`, `speed_kmh`, `lanes`, `base_time`, `current_time`, `current_penalty`, `capacity`, `load`, `saturation`, `event`) y la lista de `active_events`.
 
-1. `POST /api/v1/events/reset` devuelve la topología limpia.
-2. `POST /api/v1/route/optimize` recibe `{ "origin": "NODO_A", "destination": "NODO_F", "vehicles": 1 }`. Tras un incidente se reutiliza el origen y destino del flujo `usuario` de la sesión.
-3. El adaptador combina ambas respuestas y construye el mapa, las rutas y las trayectorias visuales.
+### 2. `POST /api/v1/route/optimize` (Flujo 1: Planificar viaje manual)
+* **Uso:** El panel **"1. Planificar mi viaje"** permite seleccionar cualquier origen y destino entre `NODO_A` y `NODO_F` y fijar la cantidad de vehículos del usuario.
+* **Payload:**
+  ```json
+  { "origin": "NODO_A", "destination": "NODO_F", "vehicles": 1 }
+  ```
+* **Datos consumidos:** Desglose del tiempo del usuario (tiempo libre de viaje + penalización por atasco = tiempo estimado), comparación de costo de red (`user_time_saved`, `system_improvement_pct`), trayectorias (`qaoa_route` vs `selfish_route`) y telemetría cuántica (`qubits_used`, `optimal_bitstring`, `solver_used`, `top_probabilities`).
 
-Al reportar un evento:
+### 3. `POST /api/v1/events/report` (Flujo 2: Registrar eventos)
+* **Uso:** Al hacer clic en cualquier arista en el mapa interactivo se despliega su **Ficha Técnica** y el formulario de reporte de eventos:
+  * `ACCIDENT`: Bloqueo crítico (+5000 min tiempo fijo).
+  * `TRAFFIC_JAM`: Congestión vial (1.8× tiempo, 4× penalización).
+  * `ROADWORK`: Obras de mantenimiento (1.5× tiempo, 6× penalización).
+* **Payload:**
+  ```json
+  { "source": "NODO_C", "target": "NODO_D", "event_type": "ACCIDENT" }
+  ```
+* Inmediatamente después se re-optimiza la red para reflejar los desvíos y los tiempos actualizados.
 
-1. El usuario selecciona una arista existente.
-2. `POST /api/v1/events/report` recibe `source`, `target` y uno de `ACCIDENT`, `TRAFFIC_JAM` o `ROADWORK`.
-3. Se ejecuta nuevamente `/api/v1/route/optimize` y se reemplazan las asignaciones animadas.
+### 4. `POST /api/v1/events/reset`
+* **Uso:** El botón **"Restablecer red"** restaura todas las aristas a condición `NORMAL`, limpia los eventos activos y devuelve la topología base limpia.
 
-## Datos consumidos
-
-La topología aporta:
-
-- `node_details`: identificador, distrito, latitud y longitud.
-- `edges`: distancia, velocidad, carriles, tiempo, capacidad, carga, saturación y evento.
-- `active_events`: eventos vigentes.
-
-La optimización aporta:
-
-- `flows[].qaoa_route`: asignación conjunta QAOA.
-- `flows[].selfish_route`: referencia tradicional con Dijkstra.
-- `edge_loads`: carga y saturación de cada estrategia.
-- `comparison`: costo de red y mejora porcentual.
-- `quantum_telemetry`: qubits, bitstring, factibilidad, solver y duración.
-
-El navegador transforma latitud/longitud al sistema de coordenadas SVG y dibuja una curva suave entre los extremos de cada arista. Esa curva es únicamente una decisión de representación: no agrega calles, cruces, rotondas ni conexiones al grafo.
-
-## Escala visual
-
-El escenario actual modela 51 vehículos: 1 del usuario, 20 del flujo B → F y 30 del flujo A → E. El selector de 10, 20 o 50 controla cuántos autos se dibujan, no cuántas variables usa QAOA. Cada auto visual indica cuántos vehículos agregados representa.
-
-La vista previa carga un snapshot de `app/config.py` y del ejemplo documentado por el backend: 6 nodos, 8 aristas, 3 flujos, 2 rutas candidatas por flujo y 6 qubits. Los incidentes de la vista previa son respuestas precalculadas para demostrar la interacción; el modo Backend muestra la respuesta real del servidor.
-
-## Fuente de verdad
-
-La topología y los nombres de distrito vienen de Superpose API. La imagen `superpose_lima_map_1792868807820.jpg` se usa como referencia de jerarquía visual, pero no como definición del grafo. Si la imagen y `app/config.py` difieren, prevalece la configuración del backend.
+### 5. `PUT /api/v1/flows/background`
+* **Uso:** El botón **"Flujos de fondo"** abre un modal para fijar en memoria los dos flujos concurrentes de la ciudad con presets rápidos (*Estándar*, *Hora Punta Matutina* o *Demanda Moderada*):
+* **Payload:**
+  ```json
+  {
+    "background_flows": [
+      { "origin": "NODO_B", "destination": "NODO_F", "vehicles": 20 },
+      { "origin": "NODO_A", "destination": "NODO_E", "vehicles": 30 }
+    ]
+  }
+  ```
