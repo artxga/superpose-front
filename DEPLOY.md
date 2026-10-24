@@ -1,6 +1,6 @@
 # Desplegar el frontend en Vercel
 
-Guía para publicar Qflow en la misma cuenta de Vercel donde está Superpose API (`https://superpose-api.vercel.app`). El frontend es un sitio estático de Vite: no necesita servidor ni base de datos.
+Guía para publicar el frontend de Superpose en la misma cuenta de Vercel donde está Superpose API (`https://superpose-api.vercel.app`). El frontend es un sitio estático de Vite: no necesita servidor ni base de datos.
 
 ## Antes de empezar
 

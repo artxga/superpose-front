@@ -616,7 +616,7 @@ export default function TrafficLab() {
               aria-pressed={strategy === 'coordinated'}
               onClick={() => handleStrategyChange('coordinated')}
             >
-              <span>Qflow · Qiskit</span>
+              <span>Superpose · Qiskit</span>
               <strong>{minutes(comparison.coordinated.userEstimatedMinutes)}</strong>
               <small>Una asignación para toda la red</small>
             </button>
@@ -624,10 +624,10 @@ export default function TrafficLab() {
           {session.keyDecision && (
             <div className="strategy-test__decision">
               <span>Decisión que cambia · {session.keyDecision.flowLabel}</span>
-              <strong>{strategy === 'coordinated' ? 'Qflow' : 'Tradicional'} asigna {activePath}</strong>
+              <strong>{strategy === 'coordinated' ? 'Superpose' : 'Tradicional'} asigna {activePath}</strong>
             </div>
           )}
-          <p>Qflow reduce el costo total de la red en <strong>{number(comparison.systemImprovementPct, 1)}%</strong>{congestionDifference > 0 ? ` y la saturación máxima en ${number(congestionDifference, 1)} puntos` : ''}.</p>
+          <p>Superpose reduce el costo total de la red en <strong>{number(comparison.systemImprovementPct, 1)}%</strong>{congestionDifference > 0 ? ` y la saturación máxima en ${number(congestionDifference, 1)} puntos` : ''}.</p>
         </div>
       )}
 
@@ -701,7 +701,7 @@ export default function TrafficLab() {
               <span>{source === 'demo' ? 'Snapshot versionado del backend' : 'Respuesta actual de Superpose API'}</span>
             </div>
             <div className="strategy-comparison__table">
-              <span /> <span className={strategy === 'traditional' ? 'is-active' : ''}>Tradicional</span><span className={strategy === 'coordinated' ? 'is-active' : ''}>Qflow</span>
+              <span /> <span className={strategy === 'traditional' ? 'is-active' : ''}>Tradicional</span><span className={strategy === 'coordinated' ? 'is-active' : ''}>Superpose</span>
               <strong>Usuario estimado</strong><span className="num">{minutes(comparison.individual.userEstimatedMinutes)}</span><span className="num">{minutes(comparison.coordinated.userEstimatedMinutes)}</span>
               <strong>Costo total red</strong><span className="num">{number(comparison.individual.systemCost, 1)}</span><span className="num">{number(comparison.coordinated.systemCost, 1)}</span>
               <strong>Saturación máxima</strong><span className="num">{number(comparison.individual.maxCongestionPct)}%</span><span className="num">{number(comparison.coordinated.maxCongestionPct)}%</span>

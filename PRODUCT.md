@@ -32,7 +32,7 @@ En lugar de recomendar la misma ruta aparentemente óptima a todos los autos, el
 
 ## Brand Commitments
 
-El concepto de trabajo es “superwaze”. Qflow es un nombre provisional para esta primera interfaz, no una marca confirmada.
+El nombre oficial de la plataforma es Superpose.
 
 ## Evidence on Hand
 

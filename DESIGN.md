@@ -1,5 +1,5 @@
 ---
-name: "Qflow"
+name: "Superpose"
 description: "La asignación coordinada de rutas convertida en una interfaz viva."
 colors:
   background: "#1c1c1c"
@@ -92,13 +92,13 @@ components:
     padding: "2rem"
 ---
 
-# Design System: Qflow
+# Design System: Superpose
 
 ## Overview
 
 **Creative North Star: "The product performs"**
 
-Qflow no explica el sistema desde fuera: convierte la asignación coordinada de rutas en la imagen principal y deja que la interfaz demuestre el concepto. La red vial, las rutas separadas y la reacción a un incidente son el material visual; el gesto central permite introducir o retirar un accidente y ver cómo cambia el conjunto.
+Superpose no explica el sistema desde fuera: convierte la asignación coordinada de rutas en la imagen principal y deja que la interfaz demuestre el concepto. La red vial, las rutas separadas y la reacción a un incidente son el material visual; el gesto central permite introducir o retirar un accidente y ver cómo cambia el conjunto.
 
 La dirección del fragmento de producto es **“Framed sheet”**: las superficies claras y los módulos con bordes pertenecen a la interfaz simulada, mientras que la página editorial permanece plana, amplia y oscura. La expresividad procede de cambios de escala, campos cromáticos, recortes geométricos y composición asimétrica, no de decoración añadida.
 
@@ -107,7 +107,7 @@ La dirección del fragmento de producto es **“Framed sheet”**: las superfici
 - El producto actúa como argumento visual, no como captura ornamental.
 - Una página editorial oscura enmarca hojas claras y módulos de datos contenidos.
 - La composición cambia por sección, pero conserva márgenes fluidos y contraste fuerte.
-- Qflow se presenta como una primera versión conceptual y un nombre provisional.
+- Superpose se presenta como una interfaz de optimización cuántica de movilidad.
 
 ## Colors
 
@@ -215,5 +215,5 @@ La entrada usa una apertura tipo shutter de 1.1 s y los elementos editoriales ap
 
 - **Don't** añadir gradientes, glassmorphism, sombras decorativas o tarjetas genéricas a la capa editorial.
 - **Don't** reutilizar el coral de alerta o los colores de ruta como acentos decorativos.
-- **Don't** presentar Qflow como marca confirmada ni los datos ilustrativos como benchmarks.
+- **Don't** presentar datos ilustrativos como benchmarks definitivos.
 - **Don't** reemplazar la demostración coordinada por una imagen de tráfico genérica.

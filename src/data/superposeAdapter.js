@@ -328,7 +328,7 @@ function strategyView(strategy, topology, optimization, visualVehicleCount) {
     : 0
   return {
     strategy,
-    strategyLabel: coordinated ? 'Qflow · asignación conjunta' : 'Tradicional · rutas individuales',
+    strategyLabel: coordinated ? 'Superpose · asignación conjunta' : 'Tradicional · rutas individuales',
     strategyDescription: coordinated
       ? `${optimization.quantum_telemetry.solver_used} combina ${optimization.flows.length} flujos sobre ${optimization.quantum_telemetry.qubits_used} qubits.`
       : `NetworkX resuelve ${optimization.flows.length} rutas con Dijkstra, una por flujo.`,

@@ -87,7 +87,7 @@ function App() {
   return (
     <>
       <header className="site-header">
-        <a className="wordmark" href="#inicio" aria-label="Qflow, inicio"><NetworkIcon />Qflow</a>
+        <a className="wordmark" href="#inicio" aria-label="Superpose, inicio"><NetworkIcon />Superpose</a>
         <button className="menu-toggle" type="button" aria-expanded={menuOpen} aria-controls="site-nav" onClick={() => setMenuOpen(!menuOpen)}>
           <span>{menuOpen ? 'Cerrar' : 'Menú'}</span>
         </button>
@@ -103,7 +103,7 @@ function App() {
         <section className="hero" id="inicio" aria-labelledby="hero-title">
           <div className="hero__copy reveal">
             <h1 id="hero-title">Cada auto,<br />una ruta.</h1>
-            <p>Qflow no busca la mejor ruta para cada conductor de forma aislada. Busca la mejor asignación conjunta para toda la red.</p>
+            <p>Superpose no busca la mejor ruta para cada conductor de forma aislada. Busca la mejor asignación conjunta para toda la red.</p>
             <a className="button" href="#laboratorio">Explorar el sistema <Arrow /></a>
           </div>
           <div className="hero__stage reveal" style={{ '--delay': '100ms' }}>
@@ -115,11 +115,11 @@ function App() {
           </div>
         </section>
 
-        <section className="intro" id="sistema" aria-label="Qué cambia con Qflow">
+        <section className="intro" id="sistema" aria-label="Qué cambia con Superpose">
           <div className="intro__copy reveal">
             <p><strong>Una ruta rápida para todos puede convertirse en una ruta lenta para todos.</strong></p>
             <p>Los navegadores tradicionales optimizan cada viaje por separado. Cuando miles de autos reciben la misma recomendación, la congestión simplemente cambia de lugar.</p>
-            <p>Qflow plantea otra pregunta: ¿qué combinación de rutas mejora el movimiento de toda la red sin abandonar el destino de cada conductor?</p>
+            <p>Superpose plantea otra pregunta: ¿qué combinación de rutas mejora el movimiento de toda la red sin abandonar el destino de cada conductor?</p>
             <p>La optimización cuántica explora esas combinaciones y asigna alternativas coordinadas. Si aparece un accidente, un cierre o una vía saturada, el conjunto se calcula de nuevo.</p>
           </div>
           <div className="intro__statement reveal" style={{ '--delay': '100ms' }} aria-hidden="true">
@@ -197,11 +197,11 @@ function App() {
       </main>
 
       <footer className="footer">
-        <div className="footer__brand"><span>Qflow</span></div>
+        <div className="footer__brand"><span>Superpose</span></div>
         <a className="footer__invite" href="#inicio">Volver al inicio <Arrow direction="up" /></a>
         <div className="footer__nav"><a href="#sistema">Sistema</a><a href="#laboratorio">Laboratorio</a><a href="#metodo">Método</a></div>
         <div className="footer__time"><span>Lima, Perú</span><strong>{time || '--:--'}</strong></div>
-        <div className="footer__note"><p>Primera versión conceptual.</p><span>Qflow es un nombre provisional.</span></div>
+        <div className="footer__note"><p>Primera versión conceptual.</p><span>Superpose · Optimización Cuántica de Tráfico.</span></div>
       </footer>
     </>
   )
